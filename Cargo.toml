@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"          # each unsafe op gets its own block + SAFETY comment
+missing_debug_implementations = "warn"   # every public type printable in panics/logs
+missing_docs = "warn"                    # public items state their contract (README DoD)
+unreachable_pub = "warn"                 # pub only when it is really part of the crate API
+rust_2024_compatibility = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pedantic opt-outs, each with a reason:
+module_name_repetitions = "allow"   # nt_term::TermEvent reads fine; renaming hurts grep-ability
+must_use_candidate = "allow"        # noise on every getter; we add #[must_use] where ignoring is a bug
+missing_errors_doc = "allow"        # error enums are self-describing; revisit at T22 for public API
+missing_panics_doc = "allow"        # panics are bugs here, not API; a panic doc would legitimise them
+cast_possible_truncation = "allow"  # cell math is u16/u32 by design; checked at trust boundaries instead
+cast_precision_loss = "allow"       # f32 layout ratios from u32 sizes; bounded values
+# Restriction lints opted in:
+undocumented_unsafe_blocks = "warn" # project rule: unsafe needs // SAFETY:
+multiple_unsafe_ops_per_block = "warn" # one op per block, so each SAFETY comment justifies one thing
+dbg_macro = "warn"                  # no stray debug output
+todo = "warn"                       # todo!() stubs allowed while freezing interfaces, never at DoD
+unimplemented = "warn"              # same as todo
+print_stdout = "warn"               # libraries must not print; nt-app/CLI allow it locally
+print_stderr = "warn"               # logging goes through the T06 log decision
+allow_attributes_without_reason = "warn"  # every #[allow] says why: #[allow(x, reason = "...")]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,12 @@
+/target
+
+# AI agent tooling and private task specs (local only)
+/.tasks/
+/.claude/
+/.opencode/
+/CLAUDE.md
+/AGENTS.md
+/scripts/oc.sh
+
+# Planning docs (local only, per user)
+/docs/
