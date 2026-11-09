@@ -10,3 +10,9 @@
 
 # Planning docs (local only, per user)
 /docs/
+
+# T02 spike artefacts
+/spikes/corpus/*.bin
+/spikes/*/target
+/spikes/vendor/
+/spikes/*/Cargo.lock
