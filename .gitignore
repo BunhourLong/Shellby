@@ -16,3 +16,7 @@
 /spikes/*/target
 /spikes/vendor/
 /spikes/*/Cargo.lock
+
+# T04 spike artefacts
+/spikes/t04-fonts/out/
+/spikes/*.png

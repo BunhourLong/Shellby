@@ -1,0 +1,22 @@
+[package]
+name = "t04-fonts"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+default = ["swash"]
+crossfont = ["dep:crossfont"]
+swash = ["dep:swash", "dep:fontdb"]
+cosmic = ["dep:cosmic-text"]
+
+[dependencies]
+crossfont = { version = "0.9", optional = true }
+swash = { version = "0.2", optional = true }
+fontdb = { version = "0.24", optional = true }
+cosmic-text = { version = "0.19", optional = true }
+
+[profile.release]
+debug = 1
