@@ -1,6 +1,0 @@
-corpus_mib=32.1 cols=200 rows=60 run_s=10
-lock    chunk reader_mbs reader_mbs_without_renderer wait_p50_us wait_p99_us wait_max_us hold_p99_us  fill_full_us fill_one_line_us allocs_after_warmup verdict
-fair      64K      249.5                       254.8         152         302        1030          81          61.1             1.06                   0 PASS (loss 2.1%, renderer_other_allocs 2)
-std       64K      252.1                       254.7         266     1001512     2867518          74          61.1             1.06                   0 MISS (loss 1.0%, renderer_other_allocs 0)
-fair      16K      250.0                       253.6          44         113        1264          88          61.1             1.06                   0 PASS (loss 1.4%, renderer_other_allocs 0)
-std       16K      245.6                       255.8           5      262501      997930          80          61.1             1.06                   0 MISS (loss 4.0%, renderer_other_allocs 0)
