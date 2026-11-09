@@ -1,0 +1,15 @@
+# Runs the full green gate (fmt, greps, clippy, tests, macOS check) on a real Apple Silicon Mac.
+# rustup on the runner reads rust-toolchain.toml, so the pinned toolchain is used as-is.
+name: macos
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/check.sh

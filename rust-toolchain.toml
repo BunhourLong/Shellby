@@ -2,3 +2,4 @@
 channel = "1.99.1"
 components = ["clippy", "rustfmt"]
 profile = "minimal"
+targets = ["aarch64-apple-darwin"]
