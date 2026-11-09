@@ -8,3 +8,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+alacritty_terminal = { version = "=0.26.0", default-features = false }  # D-T02-1
+base64 = "=0.22.1"  # OSC 99 e=1; already transitive via alacritty_terminal (T06)
+memchr = "=2.8.3"  # OSC scanner ESC search; already transitive via vte (T06)
+
+[[bench]]
+name = "term"
+harness = false
