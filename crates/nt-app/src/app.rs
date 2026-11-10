@@ -300,7 +300,13 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Ok(pane) = &run.pane {
                     run.keybuf.clear();
                     let app_cursor = pane.modes().app_cursor;
-                    keys::encode_basic(&event, run.mods, app_cursor, &mut run.keybuf);
+                    keys::encode_basic(
+                        &event.logical_key,
+                        event.text.as_deref(),
+                        run.mods,
+                        app_cursor,
+                        &mut run.keybuf,
+                    );
                     if !run.keybuf.is_empty() {
                         pane.write(&run.keybuf);
                     }
