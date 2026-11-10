@@ -226,6 +226,40 @@ impl Pane {
     }
 }
 
+/// GPU device creation running on a background thread, started before the window exists so
+/// the driver's instance and device cost overlaps window, PTY and font setup (D-T08-5).
+#[derive(Debug)]
+pub struct GpuStart(GpuStartState);
+
+#[derive(Debug)]
+enum GpuStartState {
+    Running(std::thread::JoinHandle<Result<gpu::Started, RenderError>>),
+    /// The thread could not be spawned, so the work ran inline.
+    Done(Result<gpu::Started, RenderError>),
+}
+
+impl GpuStart {
+    /// Starts creating the GPU instance, adapter and device.
+    pub fn spawn() -> Self {
+        let spawned = std::thread::Builder::new()
+            .name("nt-gpu-init".into())
+            .spawn(gpu::Started::request);
+        Self(match spawned {
+            Ok(handle) => GpuStartState::Running(handle),
+            Err(_) => GpuStartState::Done(gpu::Started::request()),
+        })
+    }
+
+    fn join(self) -> Result<gpu::Started, RenderError> {
+        match self.0 {
+            GpuStartState::Running(handle) => handle
+                .join()
+                .unwrap_or_else(|_| Err(RenderError::Device("GPU init thread panicked".into()))),
+            GpuStartState::Done(result) => result,
+        }
+    }
+}
+
 impl Renderer {
     /// Creates the GPU device and surface for `target` (nt-app passes `Arc<winit::Window>`)
     /// and loads the primary font.
@@ -235,9 +269,21 @@ impl Renderer {
         scale: f64,
         font: &FontConfig,
     ) -> Result<Self, RenderError> {
-        let gpu = gpu::Gpu::new_surface(target, size_px)?;
-        let max_dim = gpu.max_texture_dimension();
+        Self::with_gpu(GpuStart::spawn(), target, size_px, scale, font)
+    }
+
+    /// Like [`Renderer::new`], on a device already being created by `gpu`. Loads the font
+    /// before waiting for the device, so the two overlap.
+    pub fn with_gpu(
+        gpu: GpuStart,
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        size_px: (u32, u32),
+        scale: f64,
+        font: &FontConfig,
+    ) -> Result<Self, RenderError> {
         let font_object = Font::load(font, scale).map_err(RenderError::Font)?;
+        let gpu = gpu::Gpu::new_surface(gpu.join()?, target, size_px)?;
+        let max_dim = gpu.max_texture_dimension();
         let glyphs = GlyphCache::new(font_object, max_dim);
         Ok(Self::from_parts(gpu, glyphs, font.clone(), scale))
     }

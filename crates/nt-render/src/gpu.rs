@@ -92,20 +92,54 @@ fn poll_once<F: Future>(future: F) -> Result<F::Output, RenderError> {
     }
 }
 
-impl Gpu {
-    /// Surface-backed GPU state for a window of `size_px`.
-    pub(crate) fn new_surface(
-        target: impl Into<wgpu::SurfaceTarget<'static>>,
-        size_px: (u32, u32),
-    ) -> Result<Self, RenderError> {
+/// Instance, adapter and device created without a surface, so it can run on a thread before
+/// the window exists (D-T08-5).
+#[derive(Debug)]
+pub(crate) struct Started {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl Started {
+    /// Creates the instance and picks an adapter and device with no surface constraint.
+    pub(crate) fn request() -> Result<Self, RenderError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or(default_backends()),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
+        let (adapter, device, queue) = request_adapter_device(&instance, None)?;
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        })
+    }
+}
+
+impl Gpu {
+    /// Surface-backed GPU state for a window of `size_px`, on a device from `Started::request`.
+    pub(crate) fn new_surface(
+        dev: Started,
+        target: impl Into<wgpu::SurfaceTarget<'static>>,
+        size_px: (u32, u32),
+    ) -> Result<Self, RenderError> {
+        let Started {
+            instance,
+            mut adapter,
+            mut device,
+            mut queue,
+        } = dev;
         let surface = instance
             .create_surface(target)
             .map_err(|e| RenderError::Device(e.to_string()))?;
-        let (adapter, device, queue) = request_adapter_device(&instance, Some(&surface))?;
+        if !adapter.is_surface_supported(&surface) {
+            // The surfaceless pick cannot present here (e.g. a multi-GPU machine): pick again
+            // with the surface; costs a second device creation on those machines only.
+            (adapter, device, queue) = request_adapter_device(&instance, Some(&surface))?;
+        }
 
         let caps = surface.get_capabilities(&adapter);
         let (config_format, view_formats, render_format) = choose_surface_format(&adapter, &caps);
@@ -149,11 +183,12 @@ impl Gpu {
 
     /// Headless GPU state drawing into an offscreen `Rgba8Unorm` texture.
     pub(crate) fn new_headless(size_px: (u32, u32)) -> Result<Self, RenderError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or(default_backends()),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let (adapter, device, queue) = request_adapter_device(&instance, None)?;
+        let Started {
+            instance,
+            adapter,
+            device,
+            queue,
+        } = Started::request()?;
         let suspended = size_px.0 == 0 || size_px.1 == 0;
         let mut gpu = Self::assemble(
             instance,

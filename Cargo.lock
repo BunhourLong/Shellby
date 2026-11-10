@@ -874,6 +874,14 @@ dependencies = [
 [[package]]
 name = "nt-app"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "nt-pty",
+ "nt-render",
+ "nt-term",
+ "rustix 1.1.6",
+ "winit",
+]
 
 [[package]]
 name = "nt-mux"

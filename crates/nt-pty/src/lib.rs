@@ -13,7 +13,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process_group};
@@ -238,6 +238,14 @@ fn resolve_cwd(dir: &Path) -> PathBuf {
 #[derive(Debug)]
 pub struct PtyReader {
     fd: OwnedFd,
+}
+
+impl PtyReader {
+    /// Blocks until a `read` would not block or `timeout` passes; true if readable (data or
+    /// EOF). Used to serve synchronized-update deadlines (D-T06-4) without a busy loop.
+    pub fn wait_readable(&self, timeout: Duration) -> bool {
+        sys::wait_readable(&self.fd, Instant::now() + timeout)
+    }
 }
 
 impl io::Read for PtyReader {

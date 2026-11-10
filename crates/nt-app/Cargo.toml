@@ -8,3 +8,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+nt-pty = { path = "../nt-pty" }
+nt-term = { path = "../nt-term" }
+nt-render = { path = "../nt-render" }
+winit = "=0.30.13"  # D-T04-1
+log = "=0.4.35"  # D-T08-4: already transitive via wgpu
+rustix = { version = "=1.1.6", features = ["system"] }  # D-T08-4: uname() for the OSC 7 hostname

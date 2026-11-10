@@ -35,3 +35,4 @@ allow_attributes_without_reason = "warn"  # every #[allow] says why: #[allow(x, 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+panic = "abort"  # D-T08-2: a panicking reader thread must not leave a silently frozen pane

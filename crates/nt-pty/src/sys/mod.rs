@@ -205,9 +205,10 @@ pub(crate) fn wait_timeout(child: &mut Child, timeout: Duration) -> io::Result<O
     }
 }
 
-/// poll(fd, POLLIN) until `deadline`, retrying EINTR; true if readable.
-#[cfg(target_os = "linux")]
-fn wait_readable(fd: &OwnedFd, deadline: Instant) -> bool {
+/// poll(fd, POLLIN) until `deadline`, retrying EINTR; true if readable (or hung up).
+// shortcut: macOS poll() on ptys is unverified (older kernels returned POLLNVAL for
+// character devices); VERIFY at T22, fall back to select() if it fails there.
+pub(crate) fn wait_readable(fd: &OwnedFd, deadline: Instant) -> bool {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
