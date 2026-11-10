@@ -52,6 +52,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings || fail 3 "clippy
 
 echo "== 4 test"
 cargo test --workspace --locked || fail 4 "tests"
+# GPU readback tests are #[ignore]d; they need a GPU (or Mesa lavapipe) and never pass silently.
+if [ "${NT_GPU_TESTS:-}" = 1 ]; then
+  cargo test -p nt-render --locked -- --ignored || fail 4 "GPU tests (NT_GPU_TESTS=1)"
+fi
 
 echo "== 5 macOS check"
 mac=aarch64-apple-darwin

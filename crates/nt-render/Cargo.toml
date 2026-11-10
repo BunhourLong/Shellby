@@ -8,3 +8,16 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+nt-term = { path = "../nt-term" }
+# D-T04-1: Vulkan on Linux, Metal on macOS; gles/dx12/webgpu trimmed (GL cannot present on NVIDIA, D-T04-1).
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl"] }
+swash = "=0.2.10"
+fontdb = "=0.24.0"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+
+[dev-dependencies]
+winit = "=0.30.13"
+
+[[bench]]
+name = "encode"
+harness = false
