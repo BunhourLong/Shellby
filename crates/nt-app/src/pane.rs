@@ -4,7 +4,7 @@
 use std::io::{self, Read};
 use std::process::ExitStatus;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,57 @@ use crate::geometry::GridSize;
 /// Pane identity; becomes `nt_mux::id::PaneId` when T12 lands (same shape).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PaneId(pub(crate) u64);
+
+/// How long after a resize the reader may hold the program's repaint (cap).
+const HOLD_MAX_TIME: Duration = Duration::from_millis(50);
+/// Output quiet for this long ends a held repaint early.
+// ponytail: fixed idle gap (kitty's input_delay default); make it configurable (T14) if a
+// program's repaint arrives in slower bursts.
+const HOLD_IDLE: Duration = Duration::from_millis(3);
+/// A held repaint larger than this is parsed at once.
+const HOLD_MAX_BYTES: usize = 1 << 20;
+/// Parse chunk size: the lock is held for at most this many bytes.
+const CHUNK: usize = 64 * 1024;
+
+/// Resize hold, shared by the main thread (starts it) and the reader (ends it).
+///
+/// A grid resize sends SIGWINCH; full-screen programs without synchronized output (htop,
+/// ncurses) answer with "clear screen" and a repaint split over several reads. Until the hold
+/// ends, the reader buffers output instead of parsing it, so no half-drawn screen is shown.
+#[derive(Debug)]
+pub(crate) struct Hold {
+    base: Instant,
+    /// Deadline as ns since `base`; 0 = no hold.
+    until_ns: AtomicU64,
+}
+
+impl Hold {
+    pub(crate) fn new() -> Self {
+        Self {
+            base: Instant::now(),
+            until_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Holds output for up to `cap` from now.
+    pub(crate) fn start(&self, cap: Duration) {
+        let ns = (self.base.elapsed() + cap).as_nanos() as u64;
+        self.until_ns.store(ns.max(1), Ordering::Release);
+    }
+
+    /// The active deadline and its raw value, if a hold is set.
+    fn until(&self) -> Option<(Instant, u64)> {
+        let raw = self.until_ns.load(Ordering::Acquire);
+        (raw != 0).then(|| (self.base + Duration::from_nanos(raw), raw))
+    }
+
+    /// Ends the hold observed as `raw`; a newer `start` survives.
+    fn finish(&self, raw: u64) {
+        let _ = self
+            .until_ns
+            .compare_exchange(raw, 0, Ordering::AcqRel, Ordering::Relaxed);
+    }
+}
 
 /// Delivers an event to the UI thread; returns false once the UI is gone.
 pub(crate) type Sink = Box<dyn FnMut(UserEvent) -> bool + Send>;
@@ -42,6 +93,7 @@ pub(crate) struct PaneRuntime {
     writer: PtyWriter,
     terminal: SharedTerminal,
     needs_wake: Arc<AtomicBool>,
+    hold: Arc<Hold>,
     reader: Option<JoinHandle<()>>,
     /// Reused render input; owned by the main thread.
     pub(crate) frame: Frame,
@@ -75,12 +127,16 @@ impl PaneRuntime {
         let terminal: SharedTerminal =
             Arc::new(FairMutex::new(Terminal::new(term_size(grid, cell), config)));
         let needs_wake = Arc::new(AtomicBool::new(false));
+        let hold = Arc::new(Hold::new());
         let thread = {
             let (terminal, wake, replies) = (terminal.clone(), needs_wake.clone(), writer.clone());
+            let hold = hold.clone();
             std::thread::Builder::new()
                 .name(format!("nt-reader-{}", id.0))
                 .spawn(move || {
-                    reader_loop(reader, &terminal, &wake, sink, id, |b| replies.write_all(b));
+                    reader_loop(reader, &terminal, &wake, &hold, sink, id, |b| {
+                        replies.write_all(b);
+                    });
                 })
                 .map_err(SpawnError::Io)?
         };
@@ -90,6 +146,7 @@ impl PaneRuntime {
             writer,
             terminal,
             needs_wake,
+            hold,
             reader: Some(thread),
             frame: Frame::default(),
             grid,
@@ -111,6 +168,8 @@ impl PaneRuntime {
         self.grid = grid;
         self.cell = cell;
         self.terminal.lock().resize(term_size(grid, cell));
+        // Before SIGWINCH, so the program's repaint is held from its first byte.
+        self.hold.start(HOLD_MAX_TIME);
         if let Err(e) = self.pty.resize(pty_size(grid, cell)) {
             log::warn!("pane {}: pty resize failed: {e}", self.id.0);
         }
@@ -175,11 +234,13 @@ pub(crate) fn reader_loop<R: Source>(
     mut rd: R,
     terminal: &FairMutex<Terminal>,
     needs_wake: &AtomicBool,
+    hold: &Hold,
     mut sink: Sink,
     id: PaneId,
     mut reply: impl FnMut(&[u8]),
 ) {
-    let mut buf = vec![0u8; 64 * 1024].into_boxed_slice();
+    let mut buf = vec![0u8; CHUNK].into_boxed_slice();
+    let mut pending: Vec<u8> = Vec::new(); // grows only while a resize hold is active
     let mut events: Vec<TermEvent> = Vec::with_capacity(16);
     let mut sync_deadline: Option<Instant> = None;
     'read: loop {
@@ -205,16 +266,51 @@ pub(crate) fn reader_loop<R: Source>(
                 break;
             }
         };
-        {
-            let mut t = terminal.lock_unfair(); // held for one read's worth of bytes
-            t.advance(&buf[..n], &mut events);
-            sync_deadline = t.sync_deadline();
+        let mut bytes = &buf[..n];
+        if let Some((until, raw)) = hold.until() {
+            let now = Instant::now();
+            if now < until {
+                pending.extend_from_slice(bytes);
+                bytes = &[];
+                let quiet = HOLD_IDLE.min(until - now);
+                if pending.len() < HOLD_MAX_BYTES && rd.wait_readable(quiet) {
+                    continue; // the repaint is still arriving
+                }
+            }
+            hold.finish(raw); // quiet, capped, or past the deadline: show the result
         }
+        sync_deadline = if pending.is_empty() {
+            parse(terminal, bytes, &mut events)
+        } else {
+            pending.extend_from_slice(bytes);
+            let deadline = parse(terminal, &pending, &mut events);
+            pending.clear();
+            deadline
+        };
         if !deliver(&mut events, &mut sink, &mut reply, needs_wake, id) {
             break;
         }
     }
+    if !pending.is_empty() {
+        parse(terminal, &pending, &mut events);
+        deliver(&mut events, &mut sink, &mut reply, needs_wake, id);
+    }
     sink(UserEvent::PaneExited(id));
+}
+
+/// Parses `bytes` in ≤ 64 KiB lock holds; returns the pending sync deadline.
+fn parse(
+    terminal: &FairMutex<Terminal>,
+    bytes: &[u8],
+    events: &mut Vec<TermEvent>,
+) -> Option<Instant> {
+    let mut deadline = None;
+    for chunk in bytes.chunks(CHUNK) {
+        let mut t = terminal.lock_unfair();
+        t.advance(chunk, events);
+        deadline = t.sync_deadline();
+    }
+    deadline
 }
 
 /// Routes drained events (`PtyWrite` straight to the PTY so DA/CPR replies never wait for
@@ -277,6 +373,8 @@ mod tests {
     struct FakeSource {
         chunks: Receiver<Vec<u8>>,
         read_called: Sender<()>,
+        /// What `wait_readable` answers: true = more output is coming.
+        more: Arc<AtomicBool>,
     }
 
     impl Read for FakeSource {
@@ -294,7 +392,7 @@ mod tests {
 
     impl Source for FakeSource {
         fn wait_readable(&self, _timeout: Duration) -> bool {
-            true
+            self.more.load(Ordering::SeqCst)
         }
     }
 
@@ -304,6 +402,8 @@ mod tests {
         replies: Receiver<Vec<u8>>,
         terminal: Arc<FairMutex<Terminal>>,
         needs_wake: Arc<AtomicBool>,
+        hold: Arc<Hold>,
+        more: Arc<AtomicBool>,
         handle: Option<thread::JoinHandle<()>>,
         done: Receiver<()>,
         reads_seen: usize,
@@ -334,10 +434,14 @@ mod tests {
             &TermConfig::default(),
         )));
         let needs_wake = Arc::new(AtomicBool::new(false));
+        let hold = Arc::new(Hold::new());
+        let more = Arc::new(AtomicBool::new(true));
         let source = FakeSource {
             chunks: chunk_rx,
             read_called: read_tx,
+            more: more.clone(),
         };
+        let thread_hold = hold.clone();
         let thread_terminal = terminal.clone();
         let thread_wake = needs_wake.clone();
         let handle = thread::spawn(move || {
@@ -345,6 +449,7 @@ mod tests {
                 source,
                 &thread_terminal,
                 &thread_wake,
+                &thread_hold,
                 sink,
                 PaneId(1),
                 |bytes| {
@@ -359,6 +464,8 @@ mod tests {
             replies: reply_rx,
             terminal,
             needs_wake,
+            hold,
+            more,
             handle: Some(handle),
             done: done_rx,
             reads_seen: 0,
@@ -556,5 +663,57 @@ mod tests {
         assert_eq!(pane.frame.row(0)[1].ch, 'i');
         let status = pane.shutdown().expect("exit status");
         assert_eq!(status.code(), Some(3));
+    }
+
+    fn row_text(frame: &Frame, row: u16) -> String {
+        frame
+            .row(row)
+            .iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    #[test]
+    fn resize_hold_defers_parsing_until_output_goes_quiet() {
+        let (mut reader, events) = spawn_reader();
+        reader.hold.start(Duration::from_secs(60)); // cap far away: only quiet ends the hold
+        reader.send(b"\x1b[2Jab"); // a repaint's first read: clear + partial content
+        reader.wait_processed(1);
+        let mut frame = Frame::default();
+        reader.fill_into(&mut frame);
+        assert_eq!(row_text(&frame, 0), "", "half-drawn repaint was parsed");
+        assert_eq!(wake_count(&drain(&events)), 0);
+
+        reader.more.store(false, Ordering::SeqCst); // output goes quiet after the next read
+        reader.send(b"cd");
+        reader.wait_processed(2);
+        reader.fill_into(&mut frame);
+        assert_eq!(row_text(&frame, 0), "abcd");
+        assert_eq!(wake_count(&drain(&events)), 1);
+
+        // The hold is over: the next byte is parsed at once even though `more` is false.
+        reader.send(b"e");
+        reader.wait_processed(3);
+        reader.fill_into(&mut frame);
+        assert_eq!(row_text(&frame, 0), "abcde");
+    }
+
+    #[test]
+    fn held_output_is_parsed_before_pane_exited() {
+        let (mut reader, events) = spawn_reader();
+        reader.hold.start(Duration::from_secs(60));
+        reader.send(b"xy");
+        reader.wait_processed(1);
+        reader.join();
+        let mut frame = Frame::default();
+        reader.fill_into(&mut frame);
+        assert_eq!(row_text(&frame, 0), "xy");
+        let got = drain(&events);
+        assert!(
+            matches!(got.last(), Some(UserEvent::PaneExited(_))),
+            "got {got:?}"
+        );
     }
 }
